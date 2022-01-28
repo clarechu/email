@@ -5,6 +5,7 @@ package email
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
@@ -16,7 +17,6 @@ import (
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
-	"net"
 	"net/mail"
 	"net/smtp"
 	"net/textproto"
@@ -508,7 +508,7 @@ func (e *Email) Bytes() ([]byte, error) {
 
 // Send an email using the given host and SMTP auth (optional), returns any error thrown by smtp.SendMail
 // This function merges the To, Cc, and Bcc fields and calls the smtp.SendMail function using the Email.Bytes() output as the message
-/*func (e *Email) Send(addr string, a smtp.Auth) error {
+func (e *Email) Send(addr string, a smtp.Auth) error {
 	ctx, _ := context.WithTimeout(context.Background(), e.Timeout)
 	// Merge the To, Cc, and Bcc fields
 	to := make([]string, 0, len(e.To)+len(e.Cc)+len(e.Bcc))
@@ -543,139 +543,6 @@ func (e *Email) Bytes() ([]byte, error) {
 	}(cha)
 	return <-cha
 
-}*/
-
-// Send an email using the given host and SMTP auth (optional), returns any error thrown by smtp.SendMail
-// This function merges the To, Cc, and Bcc fields and calls the smtp.SendMail function using the Email.Bytes() output as the message
-func (e *Email) Send(addr string, a smtp.Auth) error {
-	// Merge the To, Cc, and Bcc fields
-	to := make([]string, 0, len(e.To)+len(e.Cc)+len(e.Bcc))
-	to = append(append(append(to, e.To...), e.Cc...), e.Bcc...)
-	for i := 0; i < len(to); i++ {
-		addr, err := mail.ParseAddress(to[i])
-		if err != nil {
-			return err
-		}
-		to[i] = addr.Address
-	}
-	// Check to make sure there is at least one recipient and one "From" address
-	if e.From == "" || len(to) == 0 {
-		return errors.New("Must specify at least one From address and one To address")
-	}
-	sender, err := e.parseSender()
-	if err != nil {
-		return err
-	}
-	raw, err := e.Bytes()
-	if err != nil {
-		return err
-	}
-	return e.SendMail(addr, a, sender, to, raw)
-}
-
-// SendMail connects to the server at addr, switches to TLS if
-// possible, authenticates with the optional mechanism a if possible,
-// and then sends an email from address from, to addresses to, with
-// message msg.
-// The addr must include a port, as in "mail.example.com:smtp".
-//
-// The addresses in the to parameter are the SMTP RCPT addresses.
-//
-// The msg parameter should be an RFC 822-style email with headers
-// first, a blank line, and then the message body. The lines of msg
-// should be CRLF terminated. The msg headers should usually include
-// fields such as "From", "To", "Subject", and "Cc".  Sending "Bcc"
-// messages is accomplished by including an email address in the to
-// parameter but not including it in the msg headers.
-//
-// The SendMail function and the net/smtp package are low-level
-// mechanisms and provide no support for DKIM signing, MIME
-// attachments (see the mime/multipart package), or other mail
-// functionality. Higher-level packages exist outside of the standard
-// library.
-func (e *Email) SendMail(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
-	if err := validateLine(from); err != nil {
-		return err
-	}
-	for _, recp := range to {
-		if err := validateLine(recp); err != nil {
-			return err
-		}
-	}
-	var c *smtp.Client
-	var err error
-	if e.Timeout == 0 {
-		c, err = smtp.Dial(addr)
-		if err != nil {
-			return err
-		}
-	} else {
-		c, err = dialWithTimeout(addr, e.Timeout)
-		if err != nil {
-			return err
-		}
-	}
-
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	if err = c.Hello("localhost"); err != nil {
-		return err
-	}
-	/*	if a != nil && c.ext != nil {
-		if _, ok := c.ext["AUTH"]; !ok {
-			return errors.New("smtp: server doesn't support AUTH")
-		}
-		if err = c.Auth(a); err != nil {
-			return err
-		}
-	}*/
-	if a != nil {
-		if err = c.Auth(a); err != nil {
-			return err
-		}
-	}
-	if err = c.Mail(from); err != nil {
-		return err
-	}
-	for _, addr := range to {
-		if err = c.Rcpt(addr); err != nil {
-			return err
-		}
-	}
-	w, err := c.Data()
-	if err != nil {
-		return err
-	}
-	_, err = w.Write(msg)
-	if err != nil {
-		return err
-	}
-	err = w.Close()
-	if err != nil {
-		return err
-	}
-	return c.Quit()
-}
-
-// DialWithTimeout returns a new Client connected to an SMTP server at addr.
-// The addr must include a port, as in "mail.example.com:smtp".
-func dialWithTimeout(addr string, timeout time.Duration) (*smtp.Client, error) {
-	conn, err := net.DialTimeout("tcp", addr, timeout)
-	if err != nil {
-		return nil, err
-	}
-	host, _, _ := net.SplitHostPort(addr)
-	return smtp.NewClient(conn, host)
-}
-
-// validateLine checks to see if a line has CR or LF as per RFC 5321
-func validateLine(line string) error {
-	if strings.ContainsAny(line, "\n\r") {
-		return errors.New("smtp: A line must not contain CR or LF")
-	}
-	return nil
 }
 
 // Select and parse an SMTP envelope sender address.  Choose Email.Sender if set, or fallback to Email.From.
@@ -771,6 +638,7 @@ func (e *Email) SendWithTLS(addr string, a smtp.Auth, t *tls.Config) error {
 // The TLS Config is helpful if you need to connect to a host that is used an untrusted
 // certificate.
 func (e *Email) SendWithStartTLS(addr string, a smtp.Auth, t *tls.Config) error {
+	ctx, _ := context.WithTimeout(context.Background(), e.Timeout)
 	// Merge the To, Cc, and Bcc fields
 	to := make([]string, 0, len(e.To)+len(e.Cc)+len(e.Bcc))
 	to = append(append(append(to, e.To...), e.Cc...), e.Bcc...)
@@ -793,21 +661,22 @@ func (e *Email) SendWithStartTLS(addr string, a smtp.Auth, t *tls.Config) error 
 	if err != nil {
 		return err
 	}
+	cha := make(chan error, 0)
+	go func(cha chan error) {
+		err = sendMailWithStartTLS(sender, addr, raw, to, a, t)
+		cha <- err
+	}(cha)
+	go func(cha chan error) {
+		<-ctx.Done()
+		cha <- errors.New("send email time out")
+	}(cha)
+	return <-cha
+}
 
+func sendMailWithStartTLS(sender, addr string, raw []byte, to []string, a smtp.Auth, t *tls.Config) error {
 	// Taken from the standard library
 	// https://github.com/golang/go/blob/master/src/net/smtp/smtp.go#L328
-	var c *smtp.Client
-	if e.Timeout == 0 {
-		c, err = smtp.Dial(addr)
-		if err != nil {
-			return err
-		}
-	} else {
-		c, err = dialWithTimeout(addr, e.Timeout)
-		if err != nil {
-			return err
-		}
-	}
+	c, err := smtp.Dial(addr)
 	defer c.Close()
 	if err = c.Hello("localhost"); err != nil {
 		return err
